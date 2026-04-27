@@ -16,6 +16,7 @@ import com.google.gson.stream.JsonWriter;
 import com.hbm.inventory.FluidStack;
 import com.hbm.inventory.RecipesCommon.AStack;
 import com.hbm.inventory.RecipesCommon.ComparableStack;
+import com.hbm.inventory.RecipesCommon.NBTStack;
 import com.hbm.inventory.RecipesCommon.OreDictStack;
 import com.hbm.inventory.fluid.FluidType;
 import com.hbm.inventory.fluid.Fluids;
@@ -24,11 +25,15 @@ import com.hbm.inventory.recipes.*;
 import com.hbm.inventory.recipes.anvil.AnvilRecipes;
 import com.hbm.items.ModItems;
 import com.hbm.main.MainRegistry;
+import com.hbm.util.ItemStackUtil;
 import com.hbm.util.Tuple.Pair;
 
 import api.hbm.recipe.IRecipeRegisterListener;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.JsonToNBT;
+import net.minecraft.nbt.NBTBase;
+import net.minecraft.nbt.NBTTagCompound;
 
 //the anti-spaghetti. this class provides so much functionality and saves so much time, i just love you, SerializableRecipe <3
 public abstract class SerializableRecipe {
@@ -50,11 +55,11 @@ public abstract class SerializableRecipe {
 		recipeHandlers.add(new BlastFurnaceRecipes());
 		recipeHandlers.add(new ShredderRecipes());
 		recipeHandlers.add(new SolderingRecipes());
-		recipeHandlers.add(new ChemplantRecipes());
 		recipeHandlers.add(new CombinationRecipes());
-		recipeHandlers.add(new CrucibleRecipes());
 		recipeHandlers.add(new CentrifugeRecipes());
 		recipeHandlers.add(new CrystallizerRecipes());
+		recipeHandlers.add(new RefineryRecipes());
+		recipeHandlers.add(new VacuumRefineryRecipes());
 		recipeHandlers.add(new FractionRecipes());
 		recipeHandlers.add(new CrackingRecipes());
 		recipeHandlers.add(new ReformingRecipes());
@@ -65,10 +70,10 @@ public abstract class SerializableRecipe {
 		recipeHandlers.add(new PyroOvenRecipes());
 		recipeHandlers.add(new BreederRecipes());
 		recipeHandlers.add(new CyclotronRecipes());
-		recipeHandlers.add(new HadronRecipes());
 		recipeHandlers.add(new FuelPoolRecipes());
 		recipeHandlers.add(new MixerRecipes());
 		recipeHandlers.add(new OutgasserRecipes());
+		recipeHandlers.add(new FluidBreederRecipes());
 		recipeHandlers.add(new CompressorRecipes());
 		recipeHandlers.add(new ElectrolyserFluidRecipes());
 		recipeHandlers.add(new ElectrolyserMetalRecipes());
@@ -77,15 +82,19 @@ public abstract class SerializableRecipe {
 		recipeHandlers.add(new ExposureChamberRecipes());
 		recipeHandlers.add(new ParticleAcceleratorRecipes());
 		recipeHandlers.add(new AmmoPressRecipes());
-		recipeHandlers.add(new AssemblerRecipes());
 		//AFTER Assembler
 		recipeHandlers.add(new AnvilRecipes());
 		recipeHandlers.add(new PedestalRecipes());
+		recipeHandlers.add(new AnnihilatorRecipes());
 		
 		//GENERIC
+		recipeHandlers.add(CrucibleRecipes.INSTANCE);
 		recipeHandlers.add(AssemblyMachineRecipes.INSTANCE);
 		recipeHandlers.add(ChemicalPlantRecipes.INSTANCE);
 		recipeHandlers.add(PUREXRecipes.INSTANCE);
+		recipeHandlers.add(FusionRecipes.INSTANCE);
+		recipeHandlers.add(PrecAssRecipes.INSTANCE);
+		recipeHandlers.add(PlasmaForgeRecipes.INSTANCE);
 
 		recipeHandlers.add(new MatDistribution());
 		recipeHandlers.add(new CustomMachineRecipes());
@@ -123,7 +132,7 @@ public abstract class SerializableRecipe {
 					Reader reader = new InputStreamReader(stream);
 					recipe.readRecipeStream(reader);
 					recipe.modified = true;
-				} catch(IOException ex) {
+				} catch(Throwable ex) {
 					MainRegistry.logger.error("Failed to reset synced recipe stream", ex);
 				}
 			} else if(recFile.exists() && recFile.isFile()) {
@@ -204,7 +213,7 @@ public abstract class SerializableRecipe {
 				recipeList.addAll(((HashMap) recipeObject).entrySet());
 			}
 
-			if(recipeList.isEmpty())
+			if(recipeList.isEmpty() && !allowEmptyRecipeList())
 				throw new IllegalStateException("Error while writing recipes for " + this.getClass().getSimpleName() + ": Recipe list is either empty or in an unsupported format!");
 
 			JsonWriter writer = new JsonWriter(new FileWriter(template));
@@ -230,6 +239,8 @@ public abstract class SerializableRecipe {
 			ex.printStackTrace();
 		}
 	}
+	
+	public boolean allowEmptyRecipeList() { return false; }
 
 	public void readRecipeFile(File file) {
 		try {
@@ -253,6 +264,11 @@ public abstract class SerializableRecipe {
 		try {
 			String type = array.get(0).getAsString();
 			int stacksize = array.size() > 2 ? array.get(2).getAsInt() : 1;
+			if("nbt".equals(type)) {
+				Item item = (Item) Item.itemRegistry.getObject(array.get(1).getAsString());
+				NBTBase nbt = array.size() > 4 ? JsonToNBT.func_150315_a(array.get(4).getAsString()) : null;
+				return new NBTStack(item, stacksize, 0).withNBT(nbt instanceof NBTTagCompound ? (NBTTagCompound) nbt : null);
+			}
 			if("item".equals(type)) {
 				Item item = (Item) Item.itemRegistry.getObject(array.get(1).getAsString());
 				int meta = array.size() > 3 ? array.get(3).getAsInt() : 0;
@@ -280,18 +296,24 @@ public abstract class SerializableRecipe {
 	public static void writeAStack(AStack astack, JsonWriter writer) throws IOException {
 		writer.beginArray();
 		writer.setIndent("");
-		if(astack instanceof ComparableStack) {
+		if(astack instanceof NBTStack) {
+			NBTStack comp = (NBTStack) astack;
+			writer.value(comp.nbt != null ? "nbt" : "item");											//NBT  identifier
+			writer.value(Item.itemRegistry.getNameForObject(comp.toStack().getItem()));					//item name
+			if(comp.stacksize != 1 || comp.meta > 0 || comp.nbt != null) writer.value(comp.stacksize);	//stack size
+			if(comp.meta > 0 || comp.nbt != null) writer.value(comp.meta);								//metadata
+			if(comp.nbt != null) writer.value(comp.nbt.toString());										//NBT
+		} else if(astack instanceof ComparableStack) {
 			ComparableStack comp = (ComparableStack) astack;
 			writer.value("item");														//ITEM  identifier
 			writer.value(Item.itemRegistry.getNameForObject(comp.toStack().getItem()));	//item name
-			if(comp.stacksize != 1 || comp.meta > 0) writer.value(comp.stacksize);						//stack size
+			if(comp.stacksize != 1 || comp.meta > 0) writer.value(comp.stacksize);		//stack size
 			if(comp.meta > 0) writer.value(comp.meta);									//metadata
-		}
-		if(astack instanceof OreDictStack) {
+		} else if(astack instanceof OreDictStack) {
 			OreDictStack ore = (OreDictStack) astack;
-			writer.value("dict");			//DICT identifier
-			writer.value(ore.name);			//dict name
-			if(ore.stacksize != 1) writer.value(ore.stacksize);	//stacksize
+			writer.value("dict");														//DICT identifier
+			writer.value(ore.name);														//dict name
+			if(ore.stacksize != 1) writer.value(ore.stacksize);							//stacksize
 		}
 		writer.endArray();
 		writer.setIndent("  ");
@@ -302,7 +324,11 @@ public abstract class SerializableRecipe {
 			Item item = (Item) Item.itemRegistry.getObject(array.get(0).getAsString());
 			int stacksize = array.size() > 1 ? array.get(1).getAsInt() : 1;
 			int meta = array.size() > 2 ? array.get(2).getAsInt() : 0;
-			if(item != null) return new ItemStack(item, stacksize, meta);
+			if(item != null) {
+				ItemStack stack = new ItemStack(item, stacksize, meta);
+				if(array.size() > 3) ItemStackUtil.addNBTFromString(stack, array.get(3).getAsString());
+				return stack;
+			}
 		} catch(Exception ex) { }
 		MainRegistry.logger.error("Error reading stack array " + array.toString() + " - defaulting to NOTHING item!");
 		return new ItemStack(ModItems.nothing);
@@ -313,8 +339,12 @@ public abstract class SerializableRecipe {
 			Item item = (Item) Item.itemRegistry.getObject(array.get(0).getAsString());
 			int stacksize = array.size() > 2 ? array.get(1).getAsInt() : 1;
 			int meta = array.size() > 3 ? array.get(2).getAsInt() : 0;
-			float chance = array.get(array.size() - 1).getAsFloat();
-			if(item != null) return new Pair(new ItemStack(item, stacksize, meta), chance);
+			if(item != null) {
+				ItemStack stack = new ItemStack(item, stacksize, meta);
+				if(array.size() > 4) ItemStackUtil.addNBTFromString(stack, array.get(3).getAsString());
+				float chance = array.get(array.size() - 1).getAsFloat();
+				return new Pair(stack, chance);
+			}
 		} catch(Exception ex) { }
 		MainRegistry.logger.error("Error reading stack array " + array.toString() + " - defaulting to NOTHING item!");
 		return new Pair(new ItemStack(ModItems.nothing), 1F);
@@ -343,9 +373,10 @@ public abstract class SerializableRecipe {
 	public static void writeItemStack(ItemStack stack, JsonWriter writer) throws IOException {
 		writer.beginArray();
 		writer.setIndent("");
-		writer.value(Item.itemRegistry.getNameForObject(stack.getItem()));						//item name
-		if(stack.stackSize != 1 || stack.getItemDamage() != 0) writer.value(stack.stackSize);	//stack size
-		if(stack.getItemDamage() != 0) writer.value(stack.getItemDamage());						//metadata
+		writer.value(Item.itemRegistry.getNameForObject(stack.getItem()));													//item name
+		if(stack.stackSize != 1 || stack.getItemDamage() != 0 || stack.hasTagCompound()) writer.value(stack.stackSize);		//stack size
+		if(stack.getItemDamage() != 0 || stack.hasTagCompound()) writer.value(stack.getItemDamage());						//metadata
+		if(stack.hasTagCompound()) writer.value(stack.stackTagCompound.toString());											//nbt
 		writer.endArray();
 		writer.setIndent("  ");
 	}
@@ -353,10 +384,11 @@ public abstract class SerializableRecipe {
 	public static void writeItemStackChance(Pair<ItemStack, Float> stack, JsonWriter writer) throws IOException {
 		writer.beginArray();
 		writer.setIndent("");
-		writer.value(Item.itemRegistry.getNameForObject(stack.getKey().getItem()));											//item name
-		if(stack.getKey().stackSize != 1 || stack.getKey().getItemDamage() != 0) writer.value(stack.getKey().stackSize);	//stack size
-		if(stack.getKey().getItemDamage() != 0) writer.value(stack.getKey().getItemDamage());								//metadata
-		writer.value(stack.value);																							//chance
+		writer.value(Item.itemRegistry.getNameForObject(stack.getKey().getItem()));																			//item name
+		if(stack.getKey().stackSize != 1 || stack.getKey().getItemDamage() != 0 || stack.getKey().hasTagCompound()) writer.value(stack.getKey().stackSize);	//stack size
+		if(stack.getKey().getItemDamage() != 0 || stack.getKey().hasTagCompound()) writer.value(stack.getKey().getItemDamage());							//metadata
+		if(stack.getKey().hasTagCompound()) writer.value(stack.getKey().stackTagCompound.toString());														//nbt
+		writer.value(stack.value);																															//chance
 		writer.endArray();
 		writer.setIndent("  ");
 	}

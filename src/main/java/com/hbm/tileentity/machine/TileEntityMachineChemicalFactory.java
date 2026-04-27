@@ -17,8 +17,10 @@ import com.hbm.items.machine.ItemMachineUpgrade;
 import com.hbm.items.machine.ItemMachineUpgrade.UpgradeType;
 import com.hbm.lib.Library;
 import com.hbm.main.MainRegistry;
+import com.hbm.main.NTMSounds;
 import com.hbm.module.machine.ModuleMachineChemplant;
 import com.hbm.sound.AudioWrapper;
+import com.hbm.tileentity.IConditionalInvAccess;
 import com.hbm.tileentity.IGUIProvider;
 import com.hbm.tileentity.IUpgradeInfoProvider;
 import com.hbm.tileentity.TileEntityMachineBase;
@@ -41,7 +43,7 @@ import net.minecraft.util.EnumChatFormatting;
 import net.minecraft.world.World;
 import net.minecraftforge.common.util.ForgeDirection;
 
-public class TileEntityMachineChemicalFactory extends TileEntityMachineBase implements IEnergyReceiverMK2, IFluidStandardTransceiverMK2, IUpgradeInfoProvider, IControlReceiver, IGUIProvider, IProxyDelegateProvider {
+public class TileEntityMachineChemicalFactory extends TileEntityMachineBase implements IEnergyReceiverMK2, IFluidStandardTransceiverMK2, IUpgradeInfoProvider, IControlReceiver, IGUIProvider, IProxyDelegateProvider, IConditionalInvAccess {
 
 	public FluidTank[] allTanks;
 	public FluidTank[] inputTanks;
@@ -98,6 +100,7 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 		if(i >= 15 && i <= 17) return true;
 		if(i >= 22 && i <= 24) return true;
 		if(i >= 29 && i <= 31) return true;
+		for(int k = 0; k < 4; k++) if(this.chemplantModule[k].isSlotClogged(i)) return true;
 		return false;
 	}
 
@@ -118,6 +121,27 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 				19, 20, 21, 22, 23, 24,
 				26, 27, 28, 29, 30, 31
 		};
+	}
+
+	/// CONDITIONAL ACCESS ///
+	@Override public boolean isItemValidForSlot(int x, int y, int z, int slot, ItemStack stack) { return this.isItemValidForSlot(slot, stack); }
+	@Override public boolean canInsertItem(int x, int y, int z, int slot, ItemStack stack, int side) { return this.canInsertItem(slot, stack, side); }
+	@Override public boolean canExtractItem(int x, int y, int z, int slot, ItemStack stack, int side) { return this.canExtractItem(slot, stack, side); }
+
+	@Override public int[] getAccessibleSlotsFromSide(int x, int y, int z, int side) {
+		DirPos[] io = getIOPos();
+		for(int i = 0; i < io.length; i++) {
+			if(io[i].compare(x + io[i].getDir().offsetX, y, z + io[i].getDir().offsetZ)) {
+				return new int[] {
+						5 + i * 7, 6 + i * 7, 7 + i * 7,
+						8, 9, 10,
+						15, 16, 17,
+						22, 23, 24,
+						29, 30, 31
+				};
+			}
+		}
+		return this.getAccessibleSlotsFromSide(side);
 	}
 
 	@Override
@@ -144,14 +168,6 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 			
 			this.power = Library.chargeTEFromItems(slots, 0, power, maxPower);
 			upgradeManager.checkSlots(slots, 1, 3);
-
-			inputTanks[0].loadTank(10, 13, slots);
-			inputTanks[1].loadTank(11, 14, slots);
-			inputTanks[2].loadTank(12, 15, slots);
-
-			outputTanks[0].unloadTank(16, 19, slots);
-			outputTanks[1].unloadTank(17, 20, slots);
-			outputTanks[2].unloadTank(18, 21, slots);
 			
 			for(DirPos pos : getConPos()) {
 				this.trySubscribe(worldObj, pos);
@@ -187,9 +203,11 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 				}
 			}
 			
+			// internal fluid sharing logic
 			for(FluidTank in : inputTanks) if(in.getTankType() != Fluids.NONE) for(FluidTank out : outputTanks) { // up to 144 iterations, but most of them are NOP anyway
 				if(out.getTankType() == Fluids.NONE) continue;
 				if(out.getTankType() != in.getTankType()) continue;
+				if(out.getPressure() != in.getPressure()) continue;
 				int toMove = BobMathUtil.min(in.getMaxFill() - in.getFill(), out.getFill(), 50);
 				if(toMove > 0) {
 					in.setFill(in.getFill() + toMove);
@@ -231,7 +249,7 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 	}
 
 	@Override public AudioWrapper createAudioLoop() {
-		return MainRegistry.proxy.getLoopedSound("hbm:block.chemicalPlant", xCoord, yCoord, zCoord, 1F, 15F, 1.0F, 20);
+		return MainRegistry.proxy.getLoopedSound(NTMSounds.CHEMPLANT_LOOP, xCoord, yCoord, zCoord, 1F, 15F, 1.0F, 20);
 	}
 
 	@Override public void onChunkUnload() {
@@ -294,6 +312,18 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 				new DirPos(xCoord - rot.offsetX - dir.offsetX * 3, yCoord, zCoord - rot.offsetZ - dir.offsetZ * 3, dir.getOpposite()),
 		};
 	}
+	
+	public DirPos[] getIOPos() {
+		ForgeDirection dir = ForgeDirection.getOrientation(this.getBlockMetadata() - 10);
+		ForgeDirection rot = dir.getRotation(ForgeDirection.UP);
+		
+		return new DirPos[] {
+				new DirPos(xCoord + dir.offsetX + rot.offsetX * 3, yCoord, zCoord + dir.offsetZ + rot.offsetZ * 3, rot),
+				new DirPos(xCoord - dir.offsetX + rot.offsetX * 3, yCoord, zCoord - dir.offsetZ + rot.offsetZ * 3, rot),
+				new DirPos(xCoord + dir.offsetX - rot.offsetX * 3, yCoord, zCoord + dir.offsetZ - rot.offsetZ * 3, rot.getOpposite()),
+				new DirPos(xCoord - dir.offsetX - rot.offsetX * 3, yCoord, zCoord - dir.offsetZ - rot.offsetZ * 3, rot.getOpposite()),
+		};
+	}
 
 	@Override
 	public void serialize(ByteBuf buf) {
@@ -326,7 +356,7 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 		super.readFromNBT(nbt);
 
 		for(int i = 0; i < inputTanks.length; i++) this.inputTanks[i].readFromNBT(nbt, "i" + i);
-		for(int i = 0; i < outputTanks.length; i++) this.outputTanks[i].readFromNBT(nbt, "i" + i);
+		for(int i = 0; i < outputTanks.length; i++) this.outputTanks[i].readFromNBT(nbt, "o" + i);
 
 		this.water.readFromNBT(nbt, "w");
 		this.lps.readFromNBT(nbt, "s");
@@ -341,7 +371,7 @@ public class TileEntityMachineChemicalFactory extends TileEntityMachineBase impl
 		super.writeToNBT(nbt);
 
 		for(int i = 0; i < inputTanks.length; i++) this.inputTanks[i].writeToNBT(nbt, "i" + i);
-		for(int i = 0; i < outputTanks.length; i++) this.outputTanks[i].writeToNBT(nbt, "i" + i);
+		for(int i = 0; i < outputTanks.length; i++) this.outputTanks[i].writeToNBT(nbt, "o" + i);
 
 		this.water.writeToNBT(nbt, "w");
 		this.lps.writeToNBT(nbt, "s");
